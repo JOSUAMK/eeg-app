@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import { Line, Pie } from "react-chartjs-2";
 import {
@@ -25,6 +25,7 @@ ChartJS.register(
   ArcElement
 );
 
+// NOTE: Keeping your original "PSD-ish" function (not a true FFT).
 function computeWelchPSD(signal, fs = 100) {
   const n = signal.length;
   const windowSize = fs;
@@ -34,48 +35,53 @@ function computeWelchPSD(signal, fs = 100) {
   for (let i = 0; i < n - windowSize; i += windowSize - overlap) {
     const segment = signal.slice(i, i + windowSize);
     const mean = segment.reduce((a, b) => a + b, 0) / segment.length;
+
     const windowed = segment.map(
       (x, idx) =>
         (x - mean) *
         (0.5 - 0.5 * Math.cos((2 * Math.PI * idx) / (windowSize - 1)))
     );
 
-    // NOTE: This is not a true FFT; keeping your original logic as-is.
-    const fft = windowed.map((val, i) => [
-      val * Math.cos((2 * Math.PI * i) / windowSize),
-      val * Math.sin((2 * Math.PI * i) / windowSize),
+    const fft = windowed.map((val, k) => [
+      val * Math.cos((2 * Math.PI * k) / windowSize),
+      val * Math.sin((2 * Math.PI * k) / windowSize),
     ]);
+
     const power = fft.map(([re, im]) => re * re + im * im);
     for (let j = 0; j < fs; j++) psd[j] += power[j] || 0;
   }
 
   return {
     freq: Array.from({ length: fs }, (_, i) => i),
-    power: psd.map((x) => 10 * Math.log10(x / (n / windowSize))),
+    power: psd.map((x) => 10 * Math.log10(x / Math.max(1, n / windowSize))),
   };
 }
 
 export default function EEGApp() {
-  const [signalData, setSignalData] = useState(null);
-
-  // existing UI controls
+  // UI controls
   const [channel, setChannel] = useState("A3");
   const [view, setView] = useState("time");
   const [compareMode, setCompareMode] = useState(false);
 
-  // NEW: Live simulator mode
-  const [liveMode, setLiveMode] = useState(false);
-  const [liveA3, setLiveA3] = useState([]); // points: {id, ts, value}
-  const [liveA4, setLiveA4] = useState([]);
-  const [lastIdA3, setLastIdA3] = useState(0);
-  const [lastIdA4, setLastIdA4] = useState(0);
+  // Data (shared rendering format)
+  const [signalData, setSignalData] = useState(null);
 
-  // Backend base URL:
-  // - Default: "/api" (Vite dev-server proxy -> backend). This works in Docker + Codespaces.
-  // - Optional override: set VITE_API_BASE to a full URL if you don't use the proxy.
+  // Live mode
+  const [liveMode, setLiveMode] = useState(false);
+  const [liveA3, setLiveA3] = useState([]); // {id, ts, value}
+  const [liveA4, setLiveA4] = useState([]);
+  const [liveStatus, setLiveStatus] = useState("idle");
+
+  // Refs so polling does NOT restart
+  const lastIdA3Ref = useRef(0);
+  const lastIdA4Ref = useRef(0);
+
+  // API base:
+  // - Default: /api (Vite proxy)
+  // - Optional override: set VITE_API_BASE to a full URL
   const API_BASE = import.meta.env.VITE_API_BASE || "/api";
 
-  // Theme colors (single source of truth)
+  // Theme colors
   const COLORS = useMemo(
     () => ({
       A3: "#3aa7ff",
@@ -87,9 +93,13 @@ export default function EEGApp() {
     []
   );
 
-  // CSV mode: load once on mount (only used when liveMode is OFF)
+  // =========================
+  // CSV Mode: load once
+  // =========================
   useEffect(() => {
     if (liveMode) return;
+
+    setSignalData(null);
 
     Papa.parse("/eeg_data_a3_a4_utc.csv", {
       download: true,
@@ -101,47 +111,77 @@ export default function EEGApp() {
         const a4 = rows.map((row) => parseFloat(row["EEG Signal A4 (uV)"]));
         setSignalData({ timestamps, A3: a3, A4: a4 });
       },
+      error: (err) => {
+        console.error("CSV parse error:", err);
+      },
     });
   }, [liveMode]);
 
-  // LIVE MODE: poll backend /live and append points
+  // =========================
+  // Live Mode: poll backend
+  // =========================
   useEffect(() => {
     if (!liveMode) return;
 
     let cancelled = false;
 
+    // fresh start
+    setSignalData(null);
+    setLiveA3([]);
+    setLiveA4([]);
+    lastIdA3Ref.current = 0;
+    lastIdA4Ref.current = 0;
+    setLiveStatus("starting…");
+
     const fetchLive = async (ch, sinceId) => {
       try {
-        const res = await fetch(
-          `${API_BASE}/live?channel=${ch}&since_id=${sinceId}&limit=200`
-        );
-        if (!res.ok) return null;
-        return await res.json();
+        const url = `${API_BASE}/live?channel=${encodeURIComponent(
+          ch
+        )}&since_id=${sinceId}&limit=200`;
+
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) {
+          setLiveStatus(`ERROR ${res.status} ${res.statusText}`);
+          return null;
+        }
+        const json = await res.json();
+        return json;
       } catch (e) {
         console.error("Live fetch failed:", e);
+        setLiveStatus(`FETCH FAILED: ${String(e)}`);
         return null;
       }
     };
 
     const tick = async () => {
+      const a3Since = lastIdA3Ref.current;
+      const a4Since = lastIdA4Ref.current;
+
       const [a3, a4] = await Promise.all([
-        fetchLive("A3", lastIdA3),
-        fetchLive("A4", lastIdA4),
+        fetchLive("A3", a3Since),
+        fetchLive("A4", a4Since),
       ]);
 
       if (cancelled) return;
 
+      const a3Count = a3?.points?.length || 0;
+      const a4Count = a4?.points?.length || 0;
+
+      setLiveStatus(
+        `ok (A3 +${a3Count}, A4 +${a4Count}) via ${API_BASE}`
+      );
+
       if (a3?.points?.length) {
-        setLiveA3((prev) => [...prev, ...a3.points].slice(-400));
-        setLastIdA3(a3.last_id);
+        setLiveA3((prev) => [...prev, ...a3.points].slice(-600));
+        lastIdA3Ref.current = a3.last_id ?? lastIdA3Ref.current;
       }
+
       if (a4?.points?.length) {
-        setLiveA4((prev) => [...prev, ...a4.points].slice(-400));
-        setLastIdA4(a4.last_id);
+        setLiveA4((prev) => [...prev, ...a4.points].slice(-600));
+        lastIdA4Ref.current = a4.last_id ?? lastIdA4Ref.current;
       }
     };
 
-    // run immediately, then interval
     tick();
     const interval = setInterval(tick, 300);
 
@@ -149,9 +189,11 @@ export default function EEGApp() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [liveMode, API_BASE, lastIdA3, lastIdA4]);
+  }, [liveMode, API_BASE]);
 
-  // When live arrays change, build signalData in your existing format
+  // =========================
+  // Convert live arrays to signalData
+  // =========================
   useEffect(() => {
     if (!liveMode) return;
 
@@ -165,12 +207,15 @@ export default function EEGApp() {
     });
   }, [liveMode, liveA3, liveA4, channel]);
 
+  // =========================
+  // Analytics helpers
+  // =========================
   const computeBandPower = () => {
     if (!signalData) return null;
 
     const data = signalData[channel] || [];
-    const cleaned = data.filter((v) => !isNaN(v));
-    if (cleaned.length === 0) return null;
+    const cleaned = data.filter((v) => Number.isFinite(v));
+    if (!cleaned.length) return null;
 
     const avg = cleaned.reduce((sum, v) => sum + v, 0) / cleaned.length;
     return {
@@ -222,7 +267,7 @@ export default function EEGApp() {
     const channels = compareMode ? ["A3", "A4"] : [channel];
 
     const datasets = channels.map((ch) => {
-      const sig = (signalData[ch] || []).filter((v) => !isNaN(v));
+      const sig = (signalData[ch] || []).filter((v) => Number.isFinite(v));
       const { power } = sig.length ? computeWelchPSD(sig) : { power: [] };
 
       return {
@@ -249,7 +294,13 @@ export default function EEGApp() {
           {
             label: "Band Power",
             data: Object.values(bandPower),
-            backgroundColor: ["#ff4d6d", "#3aa7ff", "#f6c453", "#2dd4bf", "#7c5cff"],
+            backgroundColor: [
+              "#ff4d6d",
+              "#3aa7ff",
+              "#f6c453",
+              "#2dd4bf",
+              "#7c5cff",
+            ],
             borderColor: "rgba(255,255,255,0.16)",
             borderWidth: 1,
           },
@@ -307,6 +358,9 @@ export default function EEGApp() {
     [COLORS, view]
   );
 
+  // =========================
+  // UI
+  // =========================
   return (
     <div className="app">
       <div className="container">
@@ -318,7 +372,9 @@ export default function EEGApp() {
 
           <div className="badge">
             <span>{liveMode ? "Mode:" : "Dataset:"}</span>
-            <strong>{liveMode ? "Live Simulator (DB)" : "eeg_data_a3_a4_utc.csv"}</strong>
+            <strong>
+              {liveMode ? "Live Simulator (DB)" : "eeg_data_a3_a4_utc.csv"}
+            </strong>
           </div>
         </div>
 
@@ -330,19 +386,27 @@ export default function EEGApp() {
               onChange={(e) => setChannel(e.target.value)}
               className="select"
               disabled={compareMode}
-              title={compareMode ? "Disabled while comparing A3 & A4" : "Select channel"}
+              title={
+                compareMode ? "Disabled while comparing A3 & A4" : "Select channel"
+              }
             >
               <option value="A3">A3</option>
               <option value="A4">A4</option>
             </select>
             {compareMode && (
-              <div className="toggleHint">Channel locked while compare mode is ON.</div>
+              <div className="toggleHint">
+                Channel locked while compare mode is ON.
+              </div>
             )}
           </div>
 
           <div className="control">
             <div className="label">View</div>
-            <select value={view} onChange={(e) => setView(e.target.value)} className="select">
+            <select
+              value={view}
+              onChange={(e) => setView(e.target.value)}
+              className="select"
+            >
               <option value="time">Time Domain</option>
               <option value="psd">Power Spectral Density (PSD)</option>
             </select>
@@ -353,7 +417,9 @@ export default function EEGApp() {
             <div className="toggleRow">
               <div>
                 <div style={{ fontWeight: 650 }}>Compare mode</div>
-                <div className="toggleHint">Overlay both channels on the same chart.</div>
+                <div className="toggleHint">
+                  Overlay both channels on the same chart.
+                </div>
               </div>
 
               <div
@@ -371,14 +437,19 @@ export default function EEGApp() {
             </div>
           </div>
 
-          {/* NEW: Live mode toggle (matches your switch styling) */}
           <div className="control">
             <div className="label">Live Simulator</div>
             <div className="toggleRow">
               <div>
                 <div style={{ fontWeight: 650 }}>Live mode</div>
                 <div className="toggleHint">
-                  Use DB simulator to stream new points via <code>{API_BASE}</code>
+                  Stream points via <code>{API_BASE}</code>
+                  {liveMode && (
+                    <>
+                      <br />
+                      <strong>Status:</strong> {liveStatus}
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -387,34 +458,9 @@ export default function EEGApp() {
                 role="switch"
                 aria-checked={liveMode}
                 tabIndex={0}
-                onClick={() => {
-                  setLiveMode((on) => {
-                    const next = !on;
-                    if (next) {
-                      // clean start when turning ON
-                      setSignalData(null);
-                      setLiveA3([]);
-                      setLiveA4([]);
-                      setLastIdA3(0);
-                      setLastIdA4(0);
-                    }
-                    return next;
-                  });
-                }}
+                onClick={() => setLiveMode((on) => !on)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    setLiveMode((on) => {
-                      const next = !on;
-                      if (next) {
-                        setSignalData(null);
-                        setLiveA3([]);
-                        setLiveA4([]);
-                        setLastIdA3(0);
-                        setLastIdA4(0);
-                      }
-                      return next;
-                    });
-                  }
+                  if (e.key === "Enter" || e.key === " ") setLiveMode((on) => !on);
                 }}
               >
                 <div className="switchKnob" />
@@ -426,8 +472,11 @@ export default function EEGApp() {
         <div className="grid">
           <div className="panel card">
             <div className="cardTitle">
-              {view === "time" ? "EEG Signal — Time Domain" : "EEG Signal — Power Spectrum (PSD)"}
+              {view === "time"
+                ? "EEG Signal — Time Domain"
+                : "EEG Signal — Power Spectrum (PSD)"}
             </div>
+
             <div className="cardSub">
               Showing: <strong>{compareMode ? "A3 & A4" : channel}</strong>
             </div>
