@@ -1,0 +1,20 @@
+# Python
+venv/
+backend/venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+
+# DB
+backend/data/*.db
+backend/data/*.db-journal
+
+# Env
+.env
+frontend/.env
+frontend/eeg-visualizer/.env

@@ -1,0 +1,21 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.Python
+backend/venv/
+venv/
+
+# Node
+node_modules/
+
+# SQLite / runtime data
+backend/data/*.db
+backend/data/*.db-journal
+
+# Env files (keep examples instead)
+.env
+frontend/eeg-visualizer/.env
