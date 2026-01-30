@@ -1,18 +1,31 @@
 {
-  "name": "EEG App Devcontainer",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
-  },
-  "postCreateCommand": "docker compose up --build",
-  "forwardPorts": [5173, 5000],
+  "name": "EEG App Codespace (Compose)",
+  "dockerComposeFile": ["../docker-compose.yml"],
+  "service": "frontend",
+  "workspaceFolder": "/workspace",
+  "runServices": ["db", "rust-backend", "backend", "frontend"],
+  "shutdownAction": "stopCompose",
+  "forwardPorts": [5173, 5000, 8000, 5432],
   "portsAttributes": {
     "5173": {
       "label": "Frontend",
       "onAutoForward": "openBrowser"
     },
     "5000": {
-      "label": "Backend"
+      "label": "Python Backend"
+    },
+    "8000": {
+      "label": "Rust Backend"
     }
-  }
+  },
+  "postCreateCommand": "npm install --prefix frontend/eeg-visualizer && pip install -r backend/requirements.txt || true",
+  "settings": {
+    "terminal.integrated.shell.linux": "/bin/bash"
+  },
+  "extensions": [
+    "ms-python.python",
+    "rust-lang.rust-analyzer",
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint"
+  ]
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import { Line, Pie } from "react-chartjs-2";
 import {
@@ -40,7 +40,7 @@ function computeWelchPSD(signal, fs = 100) {
         (0.5 - 0.5 * Math.cos((2 * Math.PI * idx) / (windowSize - 1)))
     );
 
-    // NOTE: This is not a true FFT; keeping your original logic as-is.
+    // NOTE: not a true FFT (kept like your original)
     const fft = windowed.map((val, i) => [
       val * Math.cos((2 * Math.PI * i) / windowSize),
       val * Math.sin((2 * Math.PI * i) / windowSize),
@@ -51,31 +51,32 @@ function computeWelchPSD(signal, fs = 100) {
 
   return {
     freq: Array.from({ length: fs }, (_, i) => i),
-    power: psd.map((x) => 10 * Math.log10(x / (n / windowSize))),
+    power: psd.map((x) => 10 * Math.log10(x / (n / windowSize || 1))),
   };
 }
 
 export default function EEGApp() {
   const [signalData, setSignalData] = useState(null);
 
-  // existing UI controls
   const [channel, setChannel] = useState("A3");
   const [view, setView] = useState("time");
   const [compareMode, setCompareMode] = useState(false);
 
-  // NEW: Live simulator mode
+  // Live simulator
   const [liveMode, setLiveMode] = useState(false);
-  const [liveA3, setLiveA3] = useState([]); // points: {id, ts, value}
+  const [liveA3, setLiveA3] = useState([]);
   const [liveA4, setLiveA4] = useState([]);
-  const [lastIdA3, setLastIdA3] = useState(0);
-  const [lastIdA4, setLastIdA4] = useState(0);
+  const [liveStatus, setLiveStatus] = useState("idle"); // idle | connecting | ok | error
 
-  // Backend base URL:
-  // - Default: "/api" (Vite dev-server proxy -> backend). This works in Docker + Codespaces.
-  // - Optional override: set VITE_API_BASE to a full URL if you don't use the proxy.
-  const API_BASE = import.meta.env.VITE_API_BASE || "/api";
+  // IMPORTANT:
+  // Always call the backend through Vite proxy (/api).
+  // This works in Codespaces + Docker.
+  const API_BASE = "/api";
 
-  // Theme colors (single source of truth)
+  // Use refs so polling effect doesn't restart every time we receive data
+  const lastIdA3Ref = useRef(0);
+  const lastIdA4Ref = useRef(0);
+
   const COLORS = useMemo(
     () => ({
       A3: "#3aa7ff",
@@ -87,7 +88,7 @@ export default function EEGApp() {
     []
   );
 
-  // CSV mode: load once on mount (only used when liveMode is OFF)
+  // CSV mode (only when liveMode is OFF)
   useEffect(() => {
     if (liveMode) return;
 
@@ -104,59 +105,71 @@ export default function EEGApp() {
     });
   }, [liveMode]);
 
-  // LIVE MODE: poll backend /live and append points
+  // LIVE MODE polling
   useEffect(() => {
     if (!liveMode) return;
 
-    let cancelled = false;
+    let stopped = false;
+    setLiveStatus("connecting");
+
+    // reset buffers
+    setSignalData(null);
+    setLiveA3([]);
+    setLiveA4([]);
+    lastIdA3Ref.current = 0;
+    lastIdA4Ref.current = 0;
 
     const fetchLive = async (ch, sinceId) => {
-      try {
-        const res = await fetch(
-          `${API_BASE}/live?channel=${ch}&since_id=${sinceId}&limit=200`
-        );
-        if (!res.ok) return null;
-        return await res.json();
-      } catch (e) {
-        console.error("Live fetch failed:", e);
-        return null;
-      }
+      const url = `${API_BASE}/live?channel=${ch}&since_id=${sinceId}&limit=200`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
     };
 
     const tick = async () => {
-      const [a3, a4] = await Promise.all([
-        fetchLive("A3", lastIdA3),
-        fetchLive("A4", lastIdA4),
-      ]);
+      try {
+        const [a3, a4] = await Promise.all([
+          fetchLive("A3", lastIdA3Ref.current),
+          fetchLive("A4", lastIdA4Ref.current),
+        ]);
 
-      if (cancelled) return;
+        if (stopped) return;
 
-      if (a3?.points?.length) {
-        setLiveA3((prev) => [...prev, ...a3.points].slice(-400));
-        setLastIdA3(a3.last_id);
-      }
-      if (a4?.points?.length) {
-        setLiveA4((prev) => [...prev, ...a4.points].slice(-400));
-        setLastIdA4(a4.last_id);
+        let gotAny = false;
+
+        if (a3?.points?.length) {
+          gotAny = true;
+          lastIdA3Ref.current = a3.last_id;
+          setLiveA3((prev) => [...prev, ...a3.points].slice(-400));
+        }
+
+        if (a4?.points?.length) {
+          gotAny = true;
+          lastIdA4Ref.current = a4.last_id;
+          setLiveA4((prev) => [...prev, ...a4.points].slice(-400));
+        }
+
+        setLiveStatus(gotAny ? "ok" : "ok");
+      } catch (e) {
+        console.error("Live fetch failed:", e);
+        if (!stopped) setLiveStatus("error");
       }
     };
 
-    // run immediately, then interval
     tick();
     const interval = setInterval(tick, 300);
 
     return () => {
-      cancelled = true;
+      stopped = true;
       clearInterval(interval);
     };
-  }, [liveMode, API_BASE, lastIdA3, lastIdA4]);
+  }, [liveMode]);
 
-  // When live arrays change, build signalData in your existing format
+  // Build signalData from live arrays
   useEffect(() => {
     if (!liveMode) return;
 
-    const base = channel === "A3" ? liveA3 : liveA4;
-    const timestamps = base.map((p) => p.ts);
+    const timestamps = (channel === "A3" ? liveA3 : liveA4).map((p) => p.ts);
 
     setSignalData({
       timestamps,
@@ -167,10 +180,9 @@ export default function EEGApp() {
 
   const computeBandPower = () => {
     if (!signalData) return null;
-
     const data = signalData[channel] || [];
     const cleaned = data.filter((v) => !isNaN(v));
-    if (cleaned.length === 0) return null;
+    if (!cleaned.length) return null;
 
     const avg = cleaned.reduce((sum, v) => sum + v, 0) / cleaned.length;
     return {
@@ -291,9 +303,7 @@ export default function EEGApp() {
         },
       },
       plugins: {
-        legend: {
-          labels: { color: COLORS.ticks },
-        },
+        legend: { labels: { color: COLORS.ticks } },
         tooltip: {
           enabled: true,
           backgroundColor: "rgba(10,18,32,0.9)",
@@ -306,6 +316,13 @@ export default function EEGApp() {
     }),
     [COLORS, view]
   );
+
+  const liveStatusText =
+    liveStatus === "connecting"
+      ? "Connecting to simulator…"
+      : liveStatus === "error"
+      ? "Live error (check backend/proxy)"
+      : "Live OK";
 
   return (
     <div className="app">
@@ -335,9 +352,7 @@ export default function EEGApp() {
               <option value="A3">A3</option>
               <option value="A4">A4</option>
             </select>
-            {compareMode && (
-              <div className="toggleHint">Channel locked while compare mode is ON.</div>
-            )}
+            {compareMode && <div className="toggleHint">Channel locked while compare mode is ON.</div>}
           </div>
 
           <div className="control">
@@ -371,14 +386,13 @@ export default function EEGApp() {
             </div>
           </div>
 
-          {/* NEW: Live mode toggle (matches your switch styling) */}
           <div className="control">
             <div className="label">Live Simulator</div>
             <div className="toggleRow">
               <div>
                 <div style={{ fontWeight: 650 }}>Live mode</div>
                 <div className="toggleHint">
-                  Use DB simulator to stream new points via <code>{API_BASE}</code>
+                  Uses proxy: <code>/api</code> • Status: <strong>{liveMode ? liveStatusText : "OFF"}</strong>
                 </div>
               </div>
 
@@ -387,34 +401,9 @@ export default function EEGApp() {
                 role="switch"
                 aria-checked={liveMode}
                 tabIndex={0}
-                onClick={() => {
-                  setLiveMode((on) => {
-                    const next = !on;
-                    if (next) {
-                      // clean start when turning ON
-                      setSignalData(null);
-                      setLiveA3([]);
-                      setLiveA4([]);
-                      setLastIdA3(0);
-                      setLastIdA4(0);
-                    }
-                    return next;
-                  });
-                }}
+                onClick={() => setLiveMode((v) => !v)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    setLiveMode((on) => {
-                      const next = !on;
-                      if (next) {
-                        setSignalData(null);
-                        setLiveA3([]);
-                        setLiveA4([]);
-                        setLastIdA3(0);
-                        setLastIdA4(0);
-                      }
-                      return next;
-                    });
-                  }
+                  if (e.key === "Enter" || e.key === " ") setLiveMode((v) => !v);
                 }}
               >
                 <div className="switchKnob" />
@@ -433,15 +422,10 @@ export default function EEGApp() {
             </div>
 
             {!signalData ? (
-              <div className="footerNote">
-                {liveMode ? "Connecting to live simulator…" : "Loading EEG data…"}
-              </div>
+              <div className="footerNote">{liveMode ? "Waiting for live points…" : "Loading EEG data…"}</div>
             ) : (
               <div className="chartBox">
-                <Line
-                  data={view === "time" ? createTimeChartData() : createPSDChartData()}
-                  options={chartOptions}
-                />
+                <Line data={view === "time" ? createTimeChartData() : createPSDChartData()} options={chartOptions} />
               </div>
             )}
           </div>
@@ -460,9 +444,7 @@ export default function EEGApp() {
                     responsive: true,
                     maintainAspectRatio: false,
                     plugins: {
-                      legend: {
-                        labels: { color: "rgba(255,255,255,0.75)" },
-                      },
+                      legend: { labels: { color: "rgba(255,255,255,0.75)" } },
                     },
                   }}
                 />

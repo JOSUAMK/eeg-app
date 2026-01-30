@@ -1,4 +1,26 @@
 services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: eeg_user
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: eeg
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./data/eeg.sql:/docker-entrypoint-initdb.d/eeg.sql:ro
+    ports:
+      - "5432:5432"
+
+  rust-backend:
+    build:
+      context: ./backend/rust-backend
+    environment:
+      DATABASE_URL: postgres://eeg_user:secret@db:5432/eeg
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
   backend:
     build: ./backend
     ports:
@@ -9,8 +31,14 @@ services:
 
 
   frontend:
-    build: ./frontend/eeg-visualizer
+    build:
+      context: ./frontend/eeg-visualizer
+      args:
+        VITE_API_BASE: "http://rust-backend:8000"
     ports:
       - "5173:5173"
     depends_on:
-      - backend
+      - rust-backend
+
+volumes:
+  db_data: {}
