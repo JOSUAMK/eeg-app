@@ -50,7 +50,7 @@ What to Do (Step-by-Step):
 
 When the folder picker opens
 
--Click OK
+- Click OK
 
 👉 That’s it.Codespaces will automatically:
 
