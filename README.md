@@ -39,17 +39,25 @@ This repo includes a `.devcontainer/` configuration for easy Codespaces use.
 ### Manual start (if needed)
 
 If you see this message:
+
 “Workspace does not exist”
+
 This is a GitHub Codespaces UI issue, not a code error.
+
 What to Do (Step-by-Step)
+
 Click the green “Open Workspace…” button
+
 When the folder picker opens:
+
 Click OK
+
 👉 That’s it.Codespaces will automatically:
-Attach the workspace
-Start Docker containers
-Forward ports
-Launch the frontend
+
+- Attach the workspace
+- Start Docker containers
+- Forward ports
+- Launch the frontend
 
 ### Why live mode works in Codespaces
 
