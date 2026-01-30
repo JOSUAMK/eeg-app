@@ -36,16 +36,9 @@ This repo includes a `.devcontainer/` configuration for easy Codespaces use.
 
 ### Manual start (if needed)
 
-If something doesn't auto-start, open a terminal in Codespaces and run:
+If Github says "Workspace doesn't exist":
 
-```bash
-# Start services defined in repository docker-compose.yml
-docker compose up --build
-```
-
-- Frontend: `http://localhost:5173`
-- Rust API: `http://localhost:8000`
-- Python backend (if used): `http://localhost:5000`
+click "open workspace" then "Ok" and everything will run by itself
 
 ### Why live mode works in Codespaces
 
