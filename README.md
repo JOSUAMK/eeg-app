@@ -18,6 +18,8 @@ Full-stack EEG visualization app.
 
 ```bash
 docker compose up --build
+or
+docker compose up --build --remove-orphans
 ```
 
 - Frontend: `http://localhost:5173`
