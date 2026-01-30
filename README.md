@@ -25,22 +25,39 @@ docker compose up --build
 
 ## GitHub Codespaces
 
-This repo includes a `.devcontainer/` configuration. In Codespaces:
+This repo includes a `.devcontainer/` configuration for easy Codespaces use.
 
-1. Create the Codespace from this repo
-2. Wait for containers to start (or run `docker compose up --build`)
-3. Open the forwarded port **5173** in the browser
+### Quick start (recommended)
+
+1. In GitHub, click **Code → Open with Codespaces → New codespace**.
+2. Codespaces will use the `.devcontainer/devcontainer.json` which starts your Docker Compose services (db, rust-backend, backend, frontend).
+3. Wait until the forwarded ports appear and the frontend build finishes.
+4. Open the forwarded port **5173** (Frontend) — VS Code will usually open it automatically.
+
+### Manual start (if needed)
+
+If something doesn't auto-start, open a terminal in Codespaces and run:
+
+```bash
+# Start services defined in repository docker-compose.yml
+docker compose up --build
+```
+
+- Frontend: `http://localhost:5173`
+- Rust API: `http://localhost:8000`
+- Python backend (if used): `http://localhost:5000`
 
 ### Why live mode works in Codespaces
 
-The frontend calls the backend through a **Vite dev-server proxy**:
+The frontend calls the backend through a **Vite dev-server proxy** by default:
 
-- Frontend uses `API_BASE = "/api"` by default
-- Vite proxies `/api/*` to the backend container (`http://backend:5000`)
+- Frontend uses `VITE_API_BASE = "/api"`
+- Vite proxies `/api/*` to the backend container (service name `backend` or `rust-backend`)
 
-This avoids hard-coding `localhost:5000`, which is different inside Codespaces.
+This avoids hard-coding `localhost:5000` which is not reachable from the container network.
 
 ### Optional: override backend URL
 
-If you do not want to use the proxy, you can set `VITE_API_BASE`.
-Example file: `frontend/eeg-visualizer/.env.example`
+If you prefer to bypass the proxy, set `VITE_API_BASE` at build time (example in `frontend/eeg-visualizer/.env.example`).
+
+> Tip: If Codespaces cannot forward a port, check the Ports view and enable Auto Forwarding for ports 5173, 8000, and 5000.
