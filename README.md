@@ -44,13 +44,13 @@ If you see this message:
 
 This is a GitHub Codespaces UI issue, not a code error.
 
-What to Do (Step-by-Step)
+What to Do (Step-by-Step):
 
-Click the green “Open Workspace…” button
+- Click the green “Open Workspace…” button
 
-When the folder picker opens:
+When the folder picker opens
 
-Click OK
+-Click OK
 
 👉 That’s it.Codespaces will automatically:
 
